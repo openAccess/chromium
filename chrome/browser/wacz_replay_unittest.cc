@@ -10,11 +10,14 @@
 #include "base/test/scoped_command_line.h"
 #include "base/test/test_future.h"
 #include "base/unguessable_token.h"
+#include "chrome/browser/chrome_content_browser_client.h"
+#include "chrome/browser/warc_tab_capture.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/child_process_host.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/site_instance.h"
@@ -27,6 +30,7 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_access_result.h"
 #include "net/cookies/cookie_options.h"
+#include "services/network/public/cpp/url_loader_factory_builder.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -38,6 +42,8 @@ constexpr char kMoment[] = "20260301120000";
 
 class WaczReplayTest : public testing::Test {
  protected:
+  void TearDown() override { ResetArchiveForTesting(); }
+
   // Starts this browser replaying `path`, as --wacz-replay would.
   void Replay(const char* path) {
     command_line_.GetProcessCommandLine()->AppendSwitchASCII(
@@ -163,6 +169,29 @@ TEST_F(WaczReplayTest, AReplayClockStartsAtTheMoment) {
             ReplayClockStart(content::StoragePartitionConfig::Create(
                 &profile_, "someextensionid", "ab-20261030225629",
                 /*in_memory=*/true)));
+}
+
+// A replay tab's service worker script is fetched through a factory made for
+// the partition alone -- the worker has no process yet -- and the browser
+// takes that factory for the archive, as it does a frame's. Any other
+// partition's it leaves to the rest of the browser.
+TEST_F(WaczReplayTest, AServiceWorkersScriptIsAnsweredFromTheArchive) {
+  Replay("/tmp/capture.wacz");
+  ChromeContentBrowserClient client;
+  const auto offer = [&](const content::StoragePartitionConfig& config) {
+    network::URLLoaderFactoryBuilder builder;
+    return client.WillCreateURLLoaderFactoryForStoragePartition(
+        &profile_, config,
+        content::ContentBrowserClient::URLLoaderFactoryType::
+            kServiceWorkerScript,
+        builder);
+  };
+
+  EXPECT_TRUE(offer(ReplayPartition(&profile_, kMoment, tab_)));
+  EXPECT_FALSE(
+      offer(content::StoragePartitionConfig::CreateDefault(&profile_)));
+  EXPECT_FALSE(offer(WarcTabCapture::CapturePartition(
+      &profile_, base::UnguessableToken::Create())));
 }
 
 // Fail closed: asked about nothing in particular -- no frame, and a process

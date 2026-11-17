@@ -2079,6 +2079,20 @@ class CONTENT_EXPORT ContentBrowserClient {
       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
       bool is_for_network_service);
 
+  // As WillCreateURLLoaderFactory(), for a factory made with neither a frame
+  // nor a process to say whose it is, only the storage partition `config` --
+  // a service worker's main script, fetched before the worker has a process,
+  // and the checks for a newer one. Called first, with the partition, which
+  // WillCreateURLLoaderFactory() is not told. Returns true if the embedder has
+  // taken the factory over, for a partition whose content it serves from
+  // somewhere else (see ShouldDenyNetworkAccess());
+  // WillCreateURLLoaderFactory() is then not called.
+  virtual bool WillCreateURLLoaderFactoryForStoragePartition(
+      BrowserContext* browser_context,
+      const StoragePartitionConfig& config,
+      URLLoaderFactoryType type,
+      network::URLLoaderFactoryBuilder& factory_builder);
+
   // Returns true when the embedder wants to intercept a websocket connection.
   virtual bool WillInterceptWebSocket(RenderFrameHost* frame);
 

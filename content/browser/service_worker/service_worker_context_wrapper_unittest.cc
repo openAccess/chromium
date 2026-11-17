@@ -12,6 +12,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/unguessable_token.h"
 #include "components/services/storage/service_worker/service_worker_storage_control_impl.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_wrapper_test_api.h"
@@ -19,10 +20,15 @@
 #include "content/browser/service_worker/service_worker_test_utils.h"
 #include "content/browser/service_worker/service_worker_version.h"
 #include "content/browser/storage_partition_impl.h"
+#include "content/public/browser/storage_partition_config.h"
+#include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "net/base/features.h"
 #include "net/base/schemeful_site.h"
+#include "services/network/public/cpp/url_loader_factory_builder.h"
+#include "services/network/public/mojom/client_security_state.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
@@ -314,6 +320,93 @@ TEST_F(ServiceWorkerContextWrapperTest, DeleteRegistration) {
   // FALSE even when live registrations may exist, as the registrations have
   // been deleted from storage.
   EXPECT_FALSE(wrapper_->MaybeHasRegistrationForStorageKey(key));
+}
+
+// Notes which of the two hooks a factory with no frame or process was offered
+// to, in order, and takes it at the first if told to.
+class PartitionFactoryBrowserClient : public TestContentBrowserClient {
+ public:
+  explicit PartitionFactoryBrowserClient(bool take) : take_(take) {}
+
+  bool WillCreateURLLoaderFactoryForStoragePartition(
+      BrowserContext* browser_context,
+      const StoragePartitionConfig& config,
+      URLLoaderFactoryType type,
+      network::URLLoaderFactoryBuilder& factory_builder) override {
+    offers_.push_back("partition");
+    partition_ = config;
+    type_ = type;
+    return take_;
+  }
+
+  void WillCreateURLLoaderFactory(
+      BrowserContext* browser_context,
+      RenderFrameHost* frame,
+      int render_process_id,
+      URLLoaderFactoryType type,
+      const url::Origin& request_initiator,
+      const net::IsolationInfo& isolation_info,
+      std::optional<int64_t> navigation_id,
+      ukm::SourceIdObj ukm_source_id,
+      network::URLLoaderFactoryBuilder& factory_builder,
+      mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+          header_client,
+      bool* bypass_redirect_checks,
+      bool* disable_secure_dns,
+      network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+      scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+      bool is_for_network_service) override {
+    offers_.push_back("frame or process");
+  }
+
+  const std::vector<std::string>& offers() const { return offers_; }
+  const std::optional<StoragePartitionConfig>& partition() const {
+    return partition_;
+  }
+  std::optional<URLLoaderFactoryType> type() const { return type_; }
+
+ private:
+  const bool take_;
+  std::vector<std::string> offers_;
+  std::optional<StoragePartitionConfig> partition_;
+  std::optional<URLLoaderFactoryType> type_;
+};
+
+// A service worker's main script is fetched before the worker has a process,
+// and no frame is the worker's, so the partition is all that says whose the
+// factory is: the embedder is told it first, and only then asked as for a
+// frame or a process. So is a check for a newer script, which is made the same
+// way -- and, unlike the first fetch, needs no worker under DevTools to test.
+TEST_F(ServiceWorkerContextWrapperTest,
+       AMainScriptFactoryIsOfferedByItsPartitionFirst) {
+  PartitionFactoryBrowserClient client(/*take=*/false);
+  ContentBrowserClient* old_client = SetBrowserClientForTesting(&client);
+
+  EXPECT_TRUE(wrapper_->GetLoaderFactoryForUpdateCheck(
+      GURL("https://example.com/"), network::mojom::ClientSecurityState::New(),
+      base::UnguessableToken::Create()));
+  EXPECT_EQ((std::vector<std::string>{"partition", "frame or process"}),
+            client.offers());
+  EXPECT_EQ(wrapper_->storage_partition()->GetConfig(), client.partition());
+  EXPECT_EQ(ContentBrowserClient::URLLoaderFactoryType::kServiceWorkerScript,
+            client.type());
+
+  SetBrowserClientForTesting(old_client);
+}
+
+// An embedder that serves the partition from somewhere else takes the factory
+// whole, and it is offered to nothing after.
+TEST_F(ServiceWorkerContextWrapperTest,
+       AMainScriptFactoryTheEmbedderTakesIsOfferedNoFurther) {
+  PartitionFactoryBrowserClient client(/*take=*/true);
+  ContentBrowserClient* old_client = SetBrowserClientForTesting(&client);
+
+  EXPECT_TRUE(wrapper_->GetLoaderFactoryForUpdateCheck(
+      GURL("https://example.com/"), network::mojom::ClientSecurityState::New(),
+      base::UnguessableToken::Create()));
+  EXPECT_EQ(std::vector<std::string>{"partition"}, client.offers());
+
+  SetBrowserClientForTesting(old_client);
 }
 
 }  // namespace content

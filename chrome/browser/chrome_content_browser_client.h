@@ -738,6 +738,11 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
       bool is_for_network_service) override;
+  bool WillCreateURLLoaderFactoryForStoragePartition(
+      content::BrowserContext* browser_context,
+      const content::StoragePartitionConfig& config,
+      URLLoaderFactoryType type,
+      network::URLLoaderFactoryBuilder& factory_builder) override;
   std::vector<std::unique_ptr<content::URLLoaderRequestInterceptor>>
   WillCreateURLLoaderRequestInterceptors(
       content::NavigationUIData* navigation_ui_data,

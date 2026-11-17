@@ -7071,6 +7071,26 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
       browser_context, header_client);
 }
 
+bool ChromeContentBrowserClient::WillCreateURLLoaderFactoryForStoragePartition(
+    content::BrowserContext* browser_context,
+    const content::StoragePartitionConfig& config,
+    URLLoaderFactoryType type,
+    network::URLLoaderFactoryBuilder& factory_builder) {
+  // A replay tab's service worker is answered out of the archive as the tab
+  // is -- its script too, fetched before the worker has a process that could
+  // say which partition it is in. Without this the script would go to the
+  // partition's network context, which is denied the network, and the worker
+  // would fail to register: a replayed page that had a service worker when it
+  // was captured would run without one.
+  if (!wacz_replay::IsReplayPartition(config)) {
+    return false;
+  }
+  auto [receiver, passthrough] = factory_builder.Append();
+  wacz_replay::BindFactoryForPartition(config, std::move(receiver),
+                                       std::move(passthrough));
+  return true;
+}
+
 std::vector<std::unique_ptr<content::URLLoaderRequestInterceptor>>
 ChromeContentBrowserClient::WillCreateURLLoaderRequestInterceptors(
     content::NavigationUIData* navigation_ui_data,

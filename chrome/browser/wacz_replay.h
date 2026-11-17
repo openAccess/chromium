@@ -181,6 +181,19 @@ void BindFactory(
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough);
 
+// As BindFactory(), for a factory that belongs to the replay partition
+// `config` as a whole rather than to a frame or a process: the one a service
+// worker's script is fetched through, before the worker has a process. What
+// it asks for goes in the log of the tab replaying in `config`.
+void BindFactoryForPartition(
+    const content::StoragePartitionConfig& config,
+    mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough);
+
+// Forgets the archive the factories above opened, which is otherwise kept for
+// the life of the process: one a test opened must not outlive its threads.
+void ResetArchiveForTesting();
+
 }  // namespace wacz_replay
 
 #endif  // CHROME_BROWSER_WACZ_REPLAY_H_

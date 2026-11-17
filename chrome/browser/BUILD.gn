@@ -5042,6 +5042,7 @@ source_set("warc_unit_tests") {
     "//content/public/browser",
     "//content/test:test_support",
     "//net",
+    "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//testing/gtest",
     "//url",

@@ -1991,21 +1991,33 @@ ServiceWorkerContextWrapper::GetLoaderFactoryForBrowserInitiatedRequest(
   mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>
       header_client;
   bool bypass_redirect_checks = false;
+  // The worker has no process yet and no frame is its own, so the partition
+  // is all there is to say whose factory this is.
+  const bool taken_by_embedder =
+      GetContentClient()
+          ->browser()
+          ->WillCreateURLLoaderFactoryForStoragePartition(
+              storage_partition_->browser_context(),
+              storage_partition_->GetConfig(),
+              ContentBrowserClient::URLLoaderFactoryType::kServiceWorkerScript,
+              factory_builder);
   // Here we give nullptr for |factory_override|, because CORS is no-op for
   // requests for this factory.
   // TODO(yhirano): Use |factory_override| because someday not just CORS but
   // ORB/CORP will use the factory and those are not no-ops for it
-  GetContentClient()->browser()->WillCreateURLLoaderFactory(
-      storage_partition_->browser_context(), /*frame=*/nullptr,
-      ChildProcessHost::kInvalidUniqueID,
-      ContentBrowserClient::URLLoaderFactoryType::kServiceWorkerScript,
-      scope_origin, net::IsolationInfo(),
-      /*navigation_id=*/std::nullopt, ukm::kInvalidSourceIdObj, factory_builder,
-      &header_client, &bypass_redirect_checks,
-      /*disable_secure_dns=*/nullptr,
-      /*factory_override=*/nullptr,
-      /*navigation_response_task_runner=*/nullptr,
-      /*is_for_network_service=*/true);
+  if (!taken_by_embedder) {
+    GetContentClient()->browser()->WillCreateURLLoaderFactory(
+        storage_partition_->browser_context(), /*frame=*/nullptr,
+        ChildProcessHost::kInvalidUniqueID,
+        ContentBrowserClient::URLLoaderFactoryType::kServiceWorkerScript,
+        scope_origin, net::IsolationInfo(),
+        /*navigation_id=*/std::nullopt, ukm::kInvalidSourceIdObj,
+        factory_builder, &header_client, &bypass_redirect_checks,
+        /*disable_secure_dns=*/nullptr,
+        /*factory_override=*/nullptr,
+        /*navigation_response_task_runner=*/nullptr,
+        /*is_for_network_service=*/true);
+  }
 
   // If we have a version_id, we are fetching a worker main script. We have a
   // DevtoolsAgentHost ready for the worker and we can add the devtools override

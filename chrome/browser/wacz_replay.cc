@@ -94,6 +94,26 @@ void ReportToTab(base::WeakPtr<content::WebContents> tab,
   }
 }
 
+// Adds the tabs with a frame in `process` to `tabs`.
+void AddTabsOf(content::RenderProcessHost& process,
+               base::flat_set<content::WebContents*>& tabs) {
+  process.ForEachRenderFrameHost([&tabs](content::RenderFrameHost* frame) {
+    if (content::WebContents* tab =
+            content::WebContents::FromRenderFrameHost(frame)) {
+      tabs.insert(tab);
+    }
+  });
+}
+
+void Record(const base::flat_set<content::WebContents*>& tabs,
+            const scoped_refptr<warc::WaczArchive>& archive,
+            base::Time moment,
+            const warc::ReplayOutcome& request) {
+  for (content::WebContents* tab : tabs) {
+    ReplayLog::Record(tab, archive, moment, request);
+  }
+}
+
 // As ReportToTab(), for a worker: it belongs to a process rather than a tab, so
 // what it asks for goes in the log of each tab with a frame in its process.
 // A process serves one partition, so they are all replaying what it is.
@@ -107,15 +127,59 @@ void ReportToTabsInProcess(int render_process_id,
     return;
   }
   base::flat_set<content::WebContents*> tabs;
-  process->ForEachRenderFrameHost([&tabs](content::RenderFrameHost* frame) {
-    if (content::WebContents* tab =
-            content::WebContents::FromRenderFrameHost(frame)) {
-      tabs.insert(tab);
+  AddTabsOf(*process, tabs);
+  Record(tabs, archive, moment, request);
+}
+
+// As ReportToTab(), for what belongs to a partition as a whole: a service
+// worker's script, fetched before the worker has a process. It goes in the log
+// of each tab with a frame in a process of the partition -- which, a replay
+// partition being a tab's own, is the tab that registered the worker and any
+// window it opened.
+void ReportToTabsInPartition(const content::StoragePartitionConfig& config,
+                             const scoped_refptr<warc::WaczArchive>& archive,
+                             base::Time moment,
+                             const warc::ReplayOutcome& request) {
+  base::flat_set<content::WebContents*> tabs;
+  for (auto it = content::RenderProcessHost::AllHostsIterator(); !it.IsAtEnd();
+       it.Advance()) {
+    content::RenderProcessHost* process = it.GetCurrentValue();
+    if (process->GetStoragePartition()->GetConfig() == config) {
+      AddTabsOf(*process, tabs);
     }
-  });
-  for (content::WebContents* tab : tabs) {
-    ReplayLog::Record(tab, archive, moment, request);
   }
+  Record(tabs, archive, moment, request);
+}
+
+// What each of the factories below reports a request to, told the archive and
+// the time the partition's clock starts at.
+using Reporter =
+    base::RepeatingCallback<void(const scoped_refptr<warc::WaczArchive>&,
+                                 base::Time,
+                                 const warc::ReplayOutcome&)>;
+
+// Fills `receiver` with a factory serving the archive at the moment of the
+// replay partition `config` -- or the earliest capture, given no partition --
+// and telling `report` what became of each request.
+void BindArchiveFactory(
+    const content::StoragePartitionConfig* config,
+    Reporter report,
+    mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
+  if (!Archive()) {
+    // Nothing is opened or read here: the archive opens itself on the sequence
+    // that may block, so the first request does not wait on a file open on
+    // this one. An archive that turns out to be unreadable still has a
+    // factory, which answers every request with a miss -- better a browser
+    // that plainly has nothing than one that quietly goes to the network.
+    Archive() = warc::WaczArchive::Open(ArchivePath());
+  }
+  const base::Time clock_start =
+      config ? ReplayClockStart(*config).value_or(base::Time()) : base::Time();
+  Archive()->BindFactory(
+      config ? ReplayMoment(*config) : std::string(), std::move(receiver),
+      std::move(passthrough),
+      base::BindRepeating(std::move(report), Archive(), clock_start));
 }
 
 void OpenReplayTab(BrowserWindowInterface* browser,
@@ -318,31 +382,30 @@ void BindFactory(
     int render_process_id,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
-  if (!Archive()) {
-    // Nothing is opened or read here: the archive opens itself on the sequence
-    // that may block, so the first request does not wait on a file open on
-    // this one. An archive that turns out to be unreadable still has a
-    // factory, which answers every request with a miss -- better a browser
-    // that plainly has nothing than one that quietly goes to the network.
-    Archive() = warc::WaczArchive::Open(ArchivePath());
-  }
   // The moment is the partition's, so a frame and the workers beside it in
   // one process cannot be served two different ones.
   const content::StoragePartition* partition =
       PartitionOf(frame, render_process_id);
-  const base::Time clock_start =
-      partition ? ReplayClockStart(partition->GetConfig()).value_or(base::Time())
-                : base::Time();
   content::WebContents* tab =
       frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
-  warc::ReplayReporter reporter =
-      tab ? base::BindRepeating(&ReportToTab, tab->GetWeakPtr(), Archive(),
-                                clock_start)
-          : base::BindRepeating(&ReportToTabsInProcess, render_process_id,
-                                Archive(), clock_start);
-  Archive()->BindFactory(
-      partition ? ReplayMoment(partition->GetConfig()) : std::string(),
-      std::move(receiver), std::move(passthrough), std::move(reporter));
+  BindArchiveFactory(
+      partition ? &partition->GetConfig() : nullptr,
+      tab ? base::BindRepeating(&ReportToTab, tab->GetWeakPtr())
+          : base::BindRepeating(&ReportToTabsInProcess, render_process_id),
+      std::move(receiver), std::move(passthrough));
+}
+
+void ResetArchiveForTesting() {
+  Archive() = nullptr;
+}
+
+void BindFactoryForPartition(
+    const content::StoragePartitionConfig& config,
+    mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
+  BindArchiveFactory(&config,
+                     base::BindRepeating(&ReportToTabsInPartition, config),
+                     std::move(receiver), std::move(passthrough));
 }
 
 }  // namespace wacz_replay

@@ -1240,6 +1240,14 @@ void ContentBrowserClient::ConfigureNetworkContextParams(
   network_context_params->accept_language = "en-us,en";
 }
 
+bool ContentBrowserClient::WillCreateURLLoaderFactoryForStoragePartition(
+    BrowserContext* browser_context,
+    const StoragePartitionConfig& config,
+    URLLoaderFactoryType type,
+    network::URLLoaderFactoryBuilder& factory_builder) {
+  return false;
+}
+
 bool ContentBrowserClient::ShouldDenyNetworkAccess(
     BrowserContext* browser_context,
     const StoragePartitionConfig& config) {
