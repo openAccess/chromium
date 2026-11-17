@@ -638,6 +638,11 @@ specific_include_rules = {
   "chrome_navigation_browsertest.cc" : [
     "+content/common/content_navigation_policy.h",
   ],
+  # To reload a page the way the page itself does, which the public simulator
+  # cannot: as a link that reloads.
+  r"warc_page_recorder_unittest\.cc": [
+    "+content/test/navigation_simulator_impl.h",
+  ],
   r"about_flags\.cc" : [
     "+components/stylus_handwriting/win/features.h",
     "+sandbox/policy/features.h",

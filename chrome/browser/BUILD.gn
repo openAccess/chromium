@@ -5045,6 +5045,7 @@ source_set("warc_unit_tests") {
     "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//testing/gtest",
+    "//third_party/blink/public/common",
     "//url",
   ]
 }

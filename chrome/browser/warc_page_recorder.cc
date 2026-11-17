@@ -21,6 +21,7 @@
 #include "base/task/thread_pool.h"
 #include "base/uuid.h"
 #include "base/values.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_handle_timing.h"
@@ -210,7 +211,14 @@ void WarcPageRecorder::DidFinishNavigation(content::NavigationHandle* handle) {
     return;
   }
 
-  content::NavigationEntry* entry = handle->GetNavigationEntry();
+  // The entry the page committed to, which is not always the one the
+  // navigation was given. A page that reloads itself -- a bot check, once it
+  // is satisfied -- is given an entry of its own when it starts, as anything a
+  // page starts is, but commits to the entry it reloads, and the one it was
+  // given is thrown away. Its title there is the document's it replaced until
+  // it sets its own, which a page does as it is parsed.
+  content::NavigationEntry* entry =
+      web_contents()->GetController().GetLastCommittedEntry();
   if (!entry) {
     return;
   }

@@ -18,7 +18,9 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/navigation_simulator.h"
+#include "content/test/navigation_simulator_impl.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
 #include "url/gurl.h"
 
 namespace {
@@ -40,6 +42,19 @@ class WarcPageRecorderTest : public ChromeRenderViewHostTestHarness {
     std::unique_ptr<content::NavigationSimulator> navigation =
         content::NavigationSimulator::CreateBrowserInitiated(url,
                                                              web_contents());
+    navigation->SetKeepLoading(true);
+    navigation->Commit();
+  }
+
+  // The page in the tab reloads itself, as a bot check does once it is
+  // satisfied, and leaves what it reloads into loading. A renderer asks for a
+  // reload as a link that reloads, never with a reload's transition, which
+  // only the browser may use.
+  void ReloadFromThePage() {
+    std::unique_ptr<content::NavigationSimulatorImpl> navigation =
+        content::NavigationSimulatorImpl::CreateRendererInitiated(
+            web_contents()->GetLastCommittedURL(), main_rfh());
+    navigation->set_navigation_type(blink::mojom::NavigationType::RELOAD);
     navigation->SetKeepLoading(true);
     navigation->Commit();
   }
@@ -95,6 +110,24 @@ TEST_F(WarcPageRecorderTest, APageIsListedUnderItsOwnTitle) {
   ASSERT_EQ(1u, pages.size());
   EXPECT_EQ("https://hop.test/", *pages[0].FindString("url"));
   EXPECT_EQ("Checking your browser", *pages[0].FindString("title"));
+}
+
+// What a bot check reloads into, once it is satisfied, is the page the visitor
+// came for, and it is listed as well as the check was -- though it takes the
+// check's place in the tab's history rather than a place of its own.
+TEST_F(WarcPageRecorderTest, APageThatReloadsItselfIsListedAgain) {
+  Land(GURL("https://site.test/"));
+  SetTitle(u"Checking your browser");
+  ReloadFromThePage();
+  SetTitle(u"Front page");
+  Land(GURL("https://next.test/"));
+
+  std::vector<base::DictValue> pages = Pages();
+  ASSERT_EQ(2u, pages.size());
+  EXPECT_EQ("https://site.test/", *pages[0].FindString("url"));
+  EXPECT_EQ("Checking your browser", *pages[0].FindString("title"));
+  EXPECT_EQ("https://site.test/", *pages[1].FindString("url"));
+  EXPECT_EQ("Front page", *pages[1].FindString("title"));
 }
 
 }  // namespace
