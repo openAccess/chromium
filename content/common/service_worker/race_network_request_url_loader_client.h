@@ -221,6 +221,11 @@ class CONTENT_EXPORT ServiceWorkerRaceNetworkRequestURLLoaderClient
   // wait for the fetch handler
   void TwoPhaseWrite(MojoResult result, const mojo::HandleSignalsState& state);
 
+  // Waits for TwoPhaseWrite() to be able to write what has been read. One
+  // watcher is armed, not both: a single call writes to every data pipe still
+  // being watched, so a notification from each would run it twice.
+  void ArmOrNotifyWriter();
+
   bool IsReadyToHandleReadWrite(MojoResult result);
 
   void CompleteReadData(uint32_t num_bytes_to_consume);

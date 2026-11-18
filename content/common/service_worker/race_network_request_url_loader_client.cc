@@ -613,8 +613,7 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::Read(
 
   CHECK(read_buffer_manager_.has_value());
   if (read_buffer_manager_->BytesRemaining() > 0) {
-    write_buffer_manager_for_race_network_request_.ArmOrNotify();
-    write_buffer_manager_for_fetch_handler_.ArmOrNotify();
+    ArmOrNotifyWriter();
     return;
   }
 
@@ -625,8 +624,7 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::Read(
               "read_data_result", read_result);
   switch (read_result) {
     case MOJO_RESULT_OK:
-      write_buffer_manager_for_race_network_request_.ArmOrNotify();
-      write_buffer_manager_for_fetch_handler_.ArmOrNotify();
+      ArmOrNotifyWriter();
       return;
     case MOJO_RESULT_FAILED_PRECONDITION:
       OnDataTransferComplete();
@@ -636,6 +634,26 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::Read(
       return;
     default:
       NOTREACHED() << "ReadData result:" << read_result;
+  }
+}
+
+void ServiceWorkerRaceNetworkRequestURLLoaderClient::ArmOrNotifyWriter() {
+  // Arming both watchers had TwoPhaseWrite() run twice for each read, and each
+  // run arm the read again, so the reads that followed doubled with every
+  // chunk, and the tasks with them, until the body ran out. A body that is
+  // always ready to read -- an archive's, a local server's -- is read a
+  // pipe's worth at a time, and a few dozen chunks in, the browser ran out of
+  // memory.
+  //
+  // TwoPhaseWrite() writes to the RaceNetworkRequest's pipe first and waits
+  // for it whenever it is full, and gives up on the fetch handler's when that
+  // one is, so the RaceNetworkRequest's is the one to wait for while it is
+  // watched. The fetch handler's is waited for only once it is the only one
+  // left.
+  if (write_buffer_manager_for_race_network_request_.IsWatching()) {
+    write_buffer_manager_for_race_network_request_.ArmOrNotify();
+  } else {
+    write_buffer_manager_for_fetch_handler_.ArmOrNotify();
   }
 }
 

@@ -7,9 +7,13 @@
 #include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/pending_task.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_view_util.h"
+#include "base/task/current_thread.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/task_observer.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "content/common/features.h"
@@ -842,5 +846,68 @@ TEST_F(ServiceWorkerRaceNetworkRequestURLLoaderClientTest,
   ASSERT_TRUE(owner()->received_redirect_info().has_value());
   EXPECT_EQ(owner()->received_redirect_info()->new_url,
             GURL("https://example.com/redirected"));
+}
+
+// Counts the tasks run on the current thread while it is alive.
+class TaskCounter : public base::TaskObserver {
+ public:
+  TaskCounter() { base::CurrentThread::Get()->AddTaskObserver(this); }
+  ~TaskCounter() override {
+    base::CurrentThread::Get()->RemoveTaskObserver(this);
+  }
+
+  void WillProcessTask(const base::PendingTask& pending_task,
+                       bool was_blocked_or_low_priority) override {
+    ++count_;
+  }
+  void DidProcessTask(const base::PendingTask& pending_task) override {}
+
+  size_t count() const { return count_; }
+
+ private:
+  size_t count_ = 0;
+};
+
+// A body is copied out in a number of tasks that grows with the number of
+// chunks it is read in. It used to double with each one. Every read armed
+// both outgoing pipes, and TwoPhaseWrite(), run once for each, armed the read
+// again each time, so every chunk was read under twice the tasks of the one
+// before. A body that is always ready to be read, as an archive's or a local
+// server's is, ran the browser out of memory, a few dozen chunks in.
+TEST_F(ServiceWorkerRaceNetworkRequestURLLoaderClientTest,
+       TasksGrowWithChunksRead) {
+  constexpr size_t kChunkSize = 8;
+  constexpr size_t kChunks = 16;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      features::kServiceWorkerAutoPreload,
+      {{"read_buffer_size", base::NumberToString(kChunkSize)}});
+  const std::string body(kChunkSize * kChunks, 'x');
+  // Room for all of it in both pipes it is copied into, so neither fills.
+  SetUpURLLoaderClient(body.size());
+  // As AutoPreload leaves it: the fetch handler commits the response, and this
+  // request feeds it.
+  owner()->SetCommitResponsibility(
+      ServiceWorkerResourceLoader::FetchResponseFrom::kServiceWorker);
+
+  TaskCounter tasks;
+  WriteData(body);
+  CompleteResponse(net::OK);
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(client_state(), ServiceWorkerRaceNetworkRequestURLLoaderClient::
+                                State::kDataTransferFinished);
+  // About two a chunk: a read, and a write. It was 3 << kChunks.
+  EXPECT_LT(tasks.count(), 4 * kChunks);
+
+  // And every byte went through.
+  std::string received;
+  client_for_fetch_handler()->RunUntilStateChange(/*resume_state=*/false);
+  while (client_for_fetch_handler()->state() == State::kChunkReceived) {
+    received += client_for_fetch_handler()->ConsumeChunk();
+    client_for_fetch_handler()->RunUntilStateChange(/*resume_state=*/true);
+  }
+  EXPECT_EQ(client_for_fetch_handler()->state(), State::kAllChunkReceived);
+  EXPECT_EQ(received, body);
 }
 }  // namespace content
