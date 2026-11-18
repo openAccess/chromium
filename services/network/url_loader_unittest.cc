@@ -1895,7 +1895,7 @@ TEST_F(URLLoaderTest, WarcLeavesACacheOnlyLoadToTheCache) {
 
 // net refuses to skip decoding for a response carrying `use-as-dictionary`,
 // because the shared-dictionary write path needs an uncompressed dictionary
-// (URLRequestHttpJob::SetUpSourceStream). A recorder that assumed its request
+// (URLRequestHttpJob::SetUpSourceStream). A recorder that assumed a request
 // to skip decoding had been honoured stored the decoded payload beneath
 // headers still advertising Content-Encoding -- a record no WARC reader can
 // interpret, and one that looks perfectly well-formed from the outside.
@@ -1933,6 +1933,8 @@ TEST_F(URLLoaderTest, WarcRewritesHeadersWhenNetDecodesDictionaryResponse) {
 
   ResourceRequest request =
       CreateResourceRequest("GET", server.GetURL("/dict.txt"));
+  // Asked of net, as a renderer asks, and refused.
+  request.client_side_content_decoding_enabled = true;
   std::string body;
   ASSERT_EQ(net::OK, LoadRequest(request, &body));
 
@@ -1952,6 +1954,111 @@ TEST_F(URLLoaderTest, WarcRewritesHeadersWhenNetDecodesDictionaryResponse) {
   EXPECT_NE(archive.find(base::StrCat(
                 {"Content-Length: ", base::NumberToString(decoded.size())})),
             std::string::npos);
+}
+
+namespace {
+
+// Answers every request with `encoded`, a script gzipped as a server sends it.
+net::EmbeddedTestServer::HandleRequestCallback ServeGzippedScript(
+    const std::string& encoded) {
+  return base::BindLambdaForTesting(
+      [encoded](const net::test_server::HttpRequest&)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        return std::make_unique<net::test_server::RawHttpResponse>(
+            base::StrCat({"HTTP/1.1 200 OK\r\n"
+                          "Content-Type: text/javascript\r\n"
+                          "Content-Encoding: gzip\r\n"
+                          "Content-Length: ",
+                          base::NumberToString(encoded.size()), "\r\n"}),
+            encoded);
+      });
+}
+
+}  // namespace
+
+// A client that cannot decode is given the body decoded, archived or not. The
+// loader fetching a service worker's scripts is one: a recorder that asked net
+// to leave every body encoded handed it compressed bytes, and a site whose
+// worker is served compressed lost the worker whenever it was archived. The
+// record holds what the client was given, beneath headers that no longer claim
+// an encoding.
+TEST_F(URLLoaderTest, WarcDecodesForAClientThatCannotDecode) {
+  base::test::ScopedFeatureList feature_list(
+      features::kRendererSideContentDecoding);
+
+  const std::string decoded = "self.addEventListener('fetch', () => {});";
+  std::string encoded;
+  ASSERT_TRUE(compression::GzipCompress(decoded, &encoded));
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(ServeGzippedScript(encoded));
+  ASSERT_TRUE(server.Start());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path =
+      temp_dir.GetPath().AppendASCII("decoded.warc");
+  std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
+
+  ResourceRequest request =
+      CreateResourceRequest("GET", server.GetURL("/sw.js"));
+  ASSERT_FALSE(request.client_side_content_decoding_enabled);
+  std::string body;
+  ASSERT_EQ(net::OK, LoadRequest(request, &body));
+  EXPECT_EQ(decoded, body);
+  EXPECT_THAT(client()->response_head()->client_side_content_decoding_types,
+              testing::IsEmpty());
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+  EXPECT_NE(archive.find(decoded), std::string::npos);
+  EXPECT_EQ(archive.find("Content-Encoding:"), std::string::npos);
+  EXPECT_NE(archive.find(base::StrCat(
+                {"Content-Length: ", base::NumberToString(decoded.size())})),
+            std::string::npos);
+}
+
+// A client that decodes for itself -- as a renderer's loads and navigations do
+// -- is given the body as it came off the wire, and that is what the archive
+// keeps, beside the encoding that describes it.
+TEST_F(URLLoaderTest, WarcKeepsTheWireFormatForAClientThatDecodes) {
+  base::test::ScopedFeatureList feature_list(
+      features::kRendererSideContentDecoding);
+
+  const std::string decoded = "document.title = 'archived';";
+  std::string encoded;
+  ASSERT_TRUE(compression::GzipCompress(decoded, &encoded));
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(ServeGzippedScript(encoded));
+  ASSERT_TRUE(server.Start());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path =
+      temp_dir.GetPath().AppendASCII("wire.warc");
+  std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
+
+  ResourceRequest request =
+      CreateResourceRequest("GET", server.GetURL("/page.js"));
+  request.client_side_content_decoding_enabled = true;
+  std::string body;
+  ASSERT_EQ(net::OK, LoadRequest(request, &body));
+  EXPECT_EQ(encoded, body);
+  EXPECT_THAT(client()->response_head()->client_side_content_decoding_types,
+              ElementsAre(net::SourceStreamType::kGzip));
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+  EXPECT_NE(archive.find(encoded), std::string::npos);
+  EXPECT_NE(archive.find("Content-Encoding: gzip"), std::string::npos);
+  EXPECT_EQ(archive.find(decoded), std::string::npos);
 }
 
 // Body bytes reach the client by more than one route. When the mojo data pipe

@@ -567,16 +567,15 @@ URLLoader::URLLoader(
 
   // A WARC response record is supposed to hold the payload exactly as it came
   // off the wire, still in its transfer encoding, so that it agrees with the
-  // Content-Encoding recorded beside it. Asking net to skip decoding gives us
-  // those bytes -- but it also makes the client responsible for decoding, which
-  // only happens when renderer-side content decoding is enabled. --warc-output
-  // enables it (see GetSwitchDependentFeatureOverrides), so the request is
-  // normally granted; whether it actually was is decided per response, in
+  // Content-Encoding recorded beside it. net leaves a body encoded only for a
+  // client that said it would decode it -- a renderer's loads and its
+  // navigations do, under kRendererSideContentDecoding -- and the request
+  // already carries that choice. A recorded load does not overrule it: a
+  // client that cannot decode, such as the loader fetching a service worker's
+  // scripts, would be handed bytes it cannot read, and the page would break for
+  // being archived. Such a body is recorded decoded instead, beneath headers
+  // rewritten to match; which of the two a response got is decided in
   // FeedWarcResponseMetadata().
-  if (warc_recorder_ &&
-      base::FeatureList::IsEnabled(features::kRendererSideContentDecoding)) {
-    url_request_->set_client_side_content_decoding_enabled(true);
-  }
 
   if (context.ShouldRequireIsolationInfo()) {
     DCHECK(!url_request_->isolation_info().IsEmpty());
